@@ -1,59 +1,105 @@
 import requests
-import whois
-from datetime import datetime
+import os
+import base64
+from dotenv import load_dotenv
 
-class ThreatEnricher:
-    def __init__(self, vt_api_key=None, abuse_api_key=None):
-        self.vt_key = vt_api_key
-        self.abuse_key = abuse_api_key
+load_dotenv()
 
-    def check_vt_url(self, url):
-        """Checks VirusTotal for URL reputation."""
-        if not self.vt_key: return {"error": "No API Key"}
+VT_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
+ABUSE_API_KEY = os.getenv("ABUSEIPDB_API_KEY")
+
+def check_virustotal_url(url):
+    try:
+        # VirusTotal requires URL to be base64 encoded
+        url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
         
-        # VT requires URLs to be base64 or sent via POST for scanning
-        # For simplicity, we use the search endpoint (works for known URLs)
-        headers = {"x-apikey": self.vt_key}
-        params = {'url': url}
-        try:
-            # Note: This is a simplified lookup for the sake of the MVP
-            response = requests.get("https://www.virustotal.com/api/v3/domains/{}", headers=headers)
-            # In a full build, you'd hash the URL or use the /urls endpoint
-            return response.json().get('data', {}).get('attributes', {}).get('last_analysis_stats', {})
-        except:
-            return "Error"
-
-    def check_abuse_ip(self, ip):
-        """Checks AbuseIPDB for IP reputation."""
-        if not self.abuse_key: return {"score": 0}
+        headers = {"x-apikey": VT_API_KEY}
         
-        url = 'https://api.abuseipdb.com/api/v2/check'
-        headers = {'Key': self.abuse_key, 'Accept': 'application/json'}
-        params = {'ipAddress': ip, 'maxAgeInDays': '90'}
-        
-        try:
-            response = requests.get(url, headers=headers, params=params)
-            return response.json().get('data', {}).get('abuseConfidenceScore', 0)
-        except:
-            return 0
+        response = requests.get(
+            f"https://www.virustotal.com/api/v3/urls/{url_id}",
+            headers=headers,
+            timeout=10
+        )
 
-    def get_domain_age(self, domain):
-        """Calculates domain age in days."""
-        try:
-            w = whois.whois(domain)
-            creation_date = w.creation_date
-            if isinstance(creation_date, list):
-                creation_date = creation_date[0]
-            
-            if creation_date:
-                age = (datetime.now() - creation_date).days
-                return age
-            return None
-        except:
-            return None
+        if response.status_code == 200:
+            data = response.json()
+            stats = data["data"]["attributes"]["last_analysis_stats"]
+            return {
+                "url": url,
+                "malicious": stats.get("malicious", 0),
+                "suspicious": stats.get("suspicious", 0),
+                "harmless": stats.get("harmless", 0),
+                "status": "success"
+            }
+        else:
+            return {
+                "url": url,
+                "malicious": 0,
+                "suspicious": 0,
+                "harmless": 0,
+                "status": "not_found"
+            }
 
-# --- Quick Test ---
-if __name__ == "__main__":
-    # Replace with your actual keys to test
-    enricher = ThreatEnricher(vt_api_key="YOUR_VT_KEY", abuse_api_key="YOUR_ABUSE_KEY")
-    print(f"Domain Age (google.com): {enricher.get_domain_age('google.com')} days")
+    except Exception as e:
+        return {
+            "url": url,
+            "malicious": 0,
+            "suspicious": 0,
+            "harmless": 0,
+            "status": f"error: {str(e)}"
+        }
+
+def check_abuseipdb(ip):
+    try:
+        headers = {
+            "Key": ABUSE_API_KEY,
+            "Accept": "application/json"
+        }
+
+        params = {
+            "ipAddress": ip,
+            "maxAgeInDays": 90
+        }
+
+        response = requests.get(
+            "https://api.abuseipdb.com/api/v2/check",
+            headers=headers,
+            params=params,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()["data"]
+            return {
+                "ip": ip,
+                "abuse_score": data.get("abuseConfidenceScore", 0),
+                "country": data.get("countryCode", "Unknown"),
+                "total_reports": data.get("totalReports", 0),
+                "status": "success"
+            }
+        else:
+            return {
+                "ip": ip,
+                "abuse_score": 0,
+                "country": "Unknown",
+                "total_reports": 0,
+                "status": "error"
+            }
+
+    except Exception as e:
+        return {
+            "ip": ip,
+            "abuse_score": 0,
+            "country": "Unknown",
+            "total_reports": 0,
+            "status": f"error: {str(e)}"
+        }
+
+def enrich_all(urls, ips):
+    url_results = [check_virustotal_url(url) for url in urls]
+    ip_results = [check_abuseipdb(ip) for ip in ips]
+    
+    return {
+        "url_results": url_results,
+        "ip_results": ip_results
+    }

@@ -1,45 +1,47 @@
 import re
-from urllib.parse import urlparse
 
-class EmailExtractor:
-    def __init__(self, raw_text):
-        self.text = raw_text
+def extract_urls(text):
+    pattern = r'https?://[^\s<>"{}|\\^`\[\]]+'
+    urls = re.findall(pattern, text)
+    urls = [url.rstrip('.,;)>') for url in urls]
+    return list(set(urls))
 
-    def extract_urls(self):
-        """Finds all URLs and returns a unique list."""
-        url_pattern = r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+[/\w\.-]*'
-        urls = re.findall(url_pattern, self.text)
-        return list(set(urls))
+def extract_ips(text):
+    pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    ips = re.findall(pattern, text)
+    valid_ips = []
+    for ip in ips:
+        parts = ip.split('.')
+        if all(0 <= int(p) <= 255 for p in parts):
+            valid_ips.append(ip)
+    return list(set(valid_ips))
 
-    def extract_ips(self):
-        """Finds all IPv4 addresses."""
-        ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-        ips = re.findall(ip_pattern, self.text)
-        # Filter out local/internal IPs if necessary
-        return list(set(ips))
+def extract_sender_info(raw_email):
+    from_pattern = r'From:?\s*(.*?)\s*[\n\r]'
+    match = re.search(from_pattern, raw_email, re.IGNORECASE)
 
-    def extract_sender_domain(self):
-        """
-        Attempts to find the 'From:' field or general email domains.
-        Returns the domain of the first email address found.
-        """
-        email_pattern = r'[a-zA-Z0-9_.+-]+@([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)'
-        match = re.search(email_pattern, self.text)
-        return match.group(1) if match else None
+    if not match:
+        return {"display_name": None, "email": None, "domain": None}
 
-    def get_all_indicators(self):
-        return {
-            "urls": self.extract_urls(),
-            "ips": self.extract_ips(),
-            "domain": self.extract_sender_domain()
-        }
+    from_line = match.group(1).strip()
 
-# --- Quick Test ---
-if __name__ == "__main__":
-    sample_email = """
-    From: support@secure-bank-login.com
-    Message: Please click here http://malicious-site.net/login 
-    to verify your account. Your login originated from 192.168.1.1 and 8.8.8.8.
-    """
-    extractor = EmailExtractor(sample_email)
-    print(extractor.get_all_indicators())
+    email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
+    email_match = re.search(email_pattern, from_line)
+    email = email_match.group(0) if email_match else None
+
+    domain = email.split('@')[1] if email else None
+
+    display_name = re.sub(r'<.*?>', '', from_line).strip().strip('"')
+
+    return {
+        "display_name": display_name,
+        "email": email,
+        "domain": domain
+    }
+
+def extract_all(email_text):
+    return {
+        "urls": extract_urls(email_text),
+        "ips": extract_ips(email_text),
+        "sender": extract_sender_info(email_text)
+    }

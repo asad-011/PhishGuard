@@ -1,93 +1,106 @@
-import os
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+from extractor import extract_all
+from enricher import enrich_all
+from keyword_analyzer import analyze_all
+from scorer import calculate_score
+from database import save_analysis, get_all_analyses, get_analysis_by_id
 
-# Import our custom modules
-from extractor import EmailExtractor
-from enricher import ThreatEnricher
-from keyword_analyzer import KeywordAnalyzer
-from scorer import RiskScorer
-from database import PhishDatabase
-from report_generator import ReportGenerator
 
 app = Flask(__name__)
-CORS(app) # Allow React to connect
+CORS(app)
 
-# Initialize Database
-db = PhishDatabase()
-
-# API Keys (Ideally use environment variables for security)
-VT_KEY = "4983f7c2e23c7df0fe0ebe3cb73617173a024493e4bb07802293433881a2bedb"
-ABUSE_KEY = "e0bc37ba2ddabfcde1b84ba2dfd4f924499cb9c8687cb3958495c4ca1480012fc416381d61f7f046"
-
-@app.route('/api/analyze', methods=['POST'])
+@app.route("/analyze", methods=["POST"])
 def analyze_email():
-    data = request.json
-    email_text = data.get('email_text', '')
+    try:
+        data = request.json
+        email_text = data.get("email_text", "")
 
-    if not email_text:
-        return jsonify({"error": "No text provided"}), 400
+        if not email_text.strip():
+            return jsonify({"error": "No email text provided"}), 400
 
-    # 1. Extraction
-    extractor = EmailExtractor(email_text)
-    iocs = extractor.get_all_indicators()
+        # STEP 1: Extract
+        extraction = extract_all(email_text)
+        urls = extraction["urls"]
+        ips = extraction["ips"]
+        sender = extraction["sender"]
 
-    # 2. Enrichment
-    enricher = ThreatEnricher(vt_api_key=VT_KEY, abuse_api_key=ABUSE_KEY)
-    
-    # We'll just check the first URL and IP for the MVP
-    vt_results = enricher.check_vt_url(iocs['urls'][0]) if iocs['urls'] else {}
-    ip_score = enricher.check_abuse_ip(iocs['ips'][0]) if iocs['ips'] else 0
-    domain_age = enricher.get_domain_age(iocs['domain']) if iocs['domain'] else None
+        # STEP 2: Enrich
+        enrichment = enrich_all(urls, ips)
+        url_results = enrichment["url_results"]
+        ip_results = enrichment["ip_results"]
 
-    enrichment_data = {
-        "vt_results": vt_results,
-        "ip_score": ip_score,
-        "domain_age": domain_age
-    }
+        # STEP 3: Keyword Analysis
+        keyword_result = analyze_all(email_text, sender)
+        keyword_analysis = keyword_result["keywords"]
+        sender_mismatch = keyword_result["sender_mismatch"]
 
-    # 3. Keyword Analysis
-    analyzer = KeywordAnalyzer(email_text)
-    keyword_results = analyzer.analyze()
+        # STEP 4: Score
+        score_result = calculate_score(
+            url_results,
+            ip_results,
+            keyword_analysis,
+            sender_mismatch
+        )
 
-    # 4. Scoring
-    scorer = RiskScorer(enrichment_data, keyword_results)
-    final_score, verdict, reasons = scorer.calculate_score()
+        # STEP 5: Save to database
+        analysis_id = save_analysis(
+            email_text,
+            extraction,
+            enrichment,
+            keyword_analysis,
+            sender_mismatch,
+            score_result
+        )
 
-    # 5. Save to History
-    db.save_scan(iocs['domain'] or "Unknown", final_score, verdict, email_text)
+        # STEP 6: Return full report
+        return jsonify({
+            "id": analysis_id,
+            "extraction": {
+                "urls": urls,
+                "ips": ips,
+                "sender": sender
+            },
+            "enrichment": {
+                "url_results": url_results,
+                "ip_results": ip_results
+            },
+            "keyword_analysis": keyword_analysis,
+            "sender_mismatch": sender_mismatch,
+            "score": score_result["score"],
+            "verdict": score_result["verdict"],
+            "color": score_result["color"],
+            "reasons": score_result["reasons"]
+        })
 
-    # 6. Prepare Response
-    full_analysis = {
-        "verdict": verdict,
-        "score": final_score,
-        "reasons": reasons,
-        "iocs": iocs,
-        "enrichment": enrichment_data,
-        "keywords": keyword_results
-    }
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    return jsonify(full_analysis)
 
-@app.route('/api/history', methods=['GET'])
+@app.route("/history", methods=["GET"])
 def get_history():
-    history = db.get_history()
-    # Format for JSON
-    formatted_history = [
-        {"id": x[0], "time": x[1], "domain": x[2], "score": x[3], "verdict": x[4]} 
-        for x in history
-    ]
-    return jsonify(formatted_history)
+    try:
+        analyses = get_all_analyses()
+        return jsonify(analyses)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/report', methods=['POST'])
-def generate_report():
-    data = request.json
-    if not os.path.exists('reports'): os.makedirs('reports')
-    
-    generator = ReportGenerator(data)
-    report_path = generator.generate()
-    
-    return send_file(report_path, as_attachment=True)
+
+@app.route("/history/<int:analysis_id>", methods=["GET"])
+def get_single_analysis(analysis_id):
+    try:
+        analysis = get_analysis_by_id(analysis_id)
+        if not analysis:
+            return jsonify({"error": "Analysis not found"}), 404
+        return jsonify(analysis)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "PhishGuard running"})
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

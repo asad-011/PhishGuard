@@ -1,43 +1,78 @@
-import re
+PHISHING_KEYWORDS = [
+    # Urgency
+    "urgent", "immediately", "within 24 hours", "act now",
+    "expire", "expiring", "limited time", "as soon as possible",
+    
+    # Account threats
+    "suspended", "blocked", "locked", "deactivated",
+    "unauthorized access", "unusual activity", "compromised",
+    
+    # Action demands
+    "verify", "confirm", "validate", "update your information",
+    "click here", "login here", "sign in here",
+    
+    # Fear tactics
+    "failure to", "will result", "permanent", "immediately or",
+    "legal action", "account closure", "terminated",
+    
+    # Reward tactics
+    "you have been selected", "congratulations", "winner",
+    "claim your prize", "free gift", "you won"
+]
 
-class KeywordAnalyzer:
-    def __init__(self, text):
-        # We store the original text but will search case-insensitively
-        self.text = text
-        
-        # Define threat categories
-        self.categories = {
-            "urgency": ["urgent", "immediately", "action required", "expiring", "final notice", "24 hours"],
-            "financial": ["invoice", "payment", "bank", "wire transfer", "refund", "transaction"],
-            "credentials": ["login", "password", "verify", "account", "unauthorized", "security alert"],
-            "generic_phish": ["winner", "lottery", "gift card", "free", "clicked here", "click here"]
-        }
+def analyze_keywords(email_text):
+    email_lower = email_text.lower()
+    found_keywords = []
 
-    def analyze(self):
-        """Detects keywords and returns found terms + a density score."""
-        findings = {}
-        total_matches = 0
+    for keyword in PHISHING_KEYWORDS:
+        if keyword.lower() in email_lower:
+            found_keywords.append(keyword)
 
-        for category, keywords in self.categories.items():
-            # Using re.IGNORECASE makes the search much more effective for phishing
-            matches = [k for k in keywords if re.search(rf'\b{k}\b', self.text, re.IGNORECASE)]
-            if matches:
-                findings[category] = matches
-                total_matches += len(matches)
+    return {
+        "keywords_found": found_keywords,
+        "keyword_count": len(found_keywords),
+        "high_risk": len(found_keywords) >= 3
+    }
 
-        # Increase the score weight: 0.2 points per match (5 matches = 1.0/max score)
-        # This ensures that a single email with multiple triggers hits the threshold
-        score = min(total_matches * 0.2, 1.0) 
+def check_sender_mismatch(sender_info):
+    display_name = (sender_info.get("display_name") or "").lower()
+    domain = (sender_info.get("domain") or "").lower()
 
-        return {
-            "detected_categories": findings,
-            "keyword_score": score,
-            "total_matches": total_matches
-        }
+    # Known brands and their legitimate domains
+    brand_domains = {
+        "paypal": "paypal.com",
+        "amazon": "amazon.com",
+        "google": "google.com",
+        "microsoft": "microsoft.com",
+        "apple": "apple.com",
+        "netflix": "netflix.com",
+        "bank": "bank.com",
+        "facebook": "facebook.com",
+        "instagram": "instagram.com"
+    }
 
-# --- Quick Test ---
-if __name__ == "__main__":
-    sample_body = "URGENT: Your bank account has seen unauthorized login activity. Verify immediately."
-    analyzer = KeywordAnalyzer(sample_body)
-    results = analyzer.analyze()
-    print(f"Results: {results}")
+    for brand, legitimate_domain in brand_domains.items():
+        if brand in display_name:
+            if domain != legitimate_domain:
+                return {
+                    "mismatch": True,
+                    "brand_claimed": brand,
+                    "actual_domain": domain,
+                    "expected_domain": legitimate_domain
+                }
+
+    return {
+        "mismatch": False,
+        "brand_claimed": None,
+        "actual_domain": domain,
+        "expected_domain": None
+    }
+
+def analyze_all(email_text, sender_info):
+    keyword_result = analyze_keywords(email_text)
+    mismatch_result = check_sender_mismatch(sender_info)
+
+    return {
+        "keywords": keyword_result,
+        "sender_mismatch": mismatch_result
+    }
