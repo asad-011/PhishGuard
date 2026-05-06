@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE_URL = "https://your-backend-name.onrender.com";
+const BASE_URL = "https://phishguard-9k7z.onrender.com";
 
 export const analyzeEmail = async (emailText) => {
     const response = await axios.post(`${BASE_URL}/analyze`, {
